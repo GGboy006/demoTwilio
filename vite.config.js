@@ -5,6 +5,7 @@ import vueDevTools from 'vite-plugin-vue-devtools';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 
 export default defineConfig({
+	base: '/demoTwilio/',  // GitHub Pages 必须设置
 	plugins: [
 		vue(),
 		vueDevTools(),
