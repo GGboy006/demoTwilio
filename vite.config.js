@@ -6,6 +6,16 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 
 export default defineConfig({
 	base: '/demoTwilio/',  // GitHub Pages 必须设置
+	build: {
+		// 确保输出目录正确
+		outDir: 'dist',
+		// 确保生成正确的入口文件
+		rollupOptions: {
+			input: {
+				main: 'index.html'
+			}
+		}
+	},
 	plugins: [
 		vue(),
 		vueDevTools(),
