@@ -1,11 +1,12 @@
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, provide } from 'vue';
 import InitiatorPage from './components/InitiatorPage.vue';
 import HelperPage from './components/HelperPage.vue';
 import { getUrlParams } from './utils/twilio';
 
 const currentRole = ref('');
 const params = ref({});
+const resetKey = ref(0);
 
 onMounted(() => {
   params.value = getUrlParams();
@@ -13,10 +14,36 @@ onMounted(() => {
   console.log('当前角色:', currentRole.value);
   console.log('参数:', params.value);
 });
+
+// 重置调试功能
+function resetDebug() {
+  console.log('重置调试状态');
+
+  // 清除 URL 参数，回到初始选择页面
+  window.history.pushState({}, '', window.location.pathname);
+
+  // 重置状态
+  currentRole.value = '';
+  params.value = {};
+
+  // 强制重新渲染组件
+  resetKey.value++;
+
+  console.log('已重置到初始状态');
+}
+
+// 提供重置方法给子组件使用
+provide('resetDebug', resetDebug);
 </script>
 
 <template>
-  <div class="app">
+  <div class="app" :key="resetKey">
+		<!-- 重置调试按钮 -->
+    <button v-if="currentRole" @click="resetDebug" class="reset-debug-btn">
+      <span class="reset-icon">🔄</span>
+      重置调试
+    </button>
+
     <!-- 发起人页面 -->
     <InitiatorPage v-if="currentRole === 'initiator'" />
 
@@ -65,6 +92,57 @@ body {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+  position: relative;
+}
+
+.reset-debug-btn {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  background: rgba(255, 87, 34, 0.9);
+  color: white;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+}
+
+.reset-debug-btn:hover {
+  background: rgba(255, 87, 34, 1);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.reset-debug-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.reset-icon {
+  display: inline-block;
+  animation: rotate 2s linear infinite;
+}
+
+@keyframes rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.reset-debug-btn:hover .reset-icon {
+  animation: rotate 0.5s linear infinite;
 }
 
 .test-page {

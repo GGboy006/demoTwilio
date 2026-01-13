@@ -5,6 +5,18 @@ import vueDevTools from 'vite-plugin-vue-devtools';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 
 export default defineConfig({
+	base: './',  // 使用相对路径
+	build: {
+		outDir: 'dist',
+		assetsDir: 'assets',
+		rollupOptions: {
+			output: {
+				chunkFileNames: 'assets/[name]-[hash].js',
+				entryFileNames: 'assets/[name]-[hash].js',
+				assetFileNames: 'assets/[name]-[hash].[ext]'
+			}
+		},
+	},
 	plugins: [
 		vue(),
 		vueDevTools(),
