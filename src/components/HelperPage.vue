@@ -52,6 +52,9 @@
         <span>{{ isFlashlightOn ? '关灯' : '开灯' }}</span>
       </button>
     </div>
+
+    <!-- 调试面板 -->
+    <DebugPanel ref="debugPanelRef" />
   </div>
 </template>
 
@@ -60,8 +63,10 @@ import { ref, onMounted, onUnmounted } from 'vue';
 import { connect } from 'twilio-video';
 import { getTwilioToken, getUrlParams, monitorAudioLevel } from '../utils/twilio';
 import { capturePhoto as capturePhotoNative, toggleFlashlight as toggleFlashlightNative, notifyCallEnded } from '../utils/webview';
+import DebugPanel from './DebugPanel.vue';
 
 const remoteVideoRef = ref(null);
+const debugPanelRef = ref(null);
 
 const isConnecting = ref(true);
 const connectionStatus = ref('connecting');
@@ -96,11 +101,15 @@ onMounted(async () => {
   try {
     const params = getUrlParams();
     console.log('接受人参数:', params);
+    debugPanelRef.value?.addLog('info', '接受人页面初始化', params);
 
     // 获取 Token
+    debugPanelRef.value?.addLog('info', '正在获取 Twilio Token...', { userId: params.userId, roomId: params.roomId });
     const token = await getTwilioToken(params.userId, params.roomId);
+    debugPanelRef.value?.addLog('success', 'Token 获取成功');
 
     // 连接到房间（只开启麦克风，不开启摄像头）
+    debugPanelRef.value?.addLog('info', '正在连接到视频房间（仅音频）...', { roomId: params.roomId });
     room = await connect(token, {
       name: params.roomId,
       audio: true,
@@ -112,24 +121,34 @@ onMounted(async () => {
     });
 
     console.log('成功加入房间:', room.name);
+    debugPanelRef.value?.addLog('success', `成功加入房间: ${room.name}`, {
+      participantSid: room.localParticipant.sid,
+      participantIdentity: room.localParticipant.identity,
+      mode: '仅音频（接受人模式）'
+    });
     isConnecting.value = false;
     connectionStatus.value = 'connected';
     connectionStatusText.value = statusMap.connected;
 
     // 监听本地音频音量（接受人自己的麦克风）
+    debugPanelRef.value?.addLog('info', '正在启动音频监听...');
     room.localParticipant.audioTracks.forEach((publication) => {
       stopAudioMonitor = monitorAudioLevel(publication.track.mediaStreamTrack, (level) => {
         audioLevel.value = level;
       });
+      debugPanelRef.value?.addLog('success', '音频监听已启动', { trackSid: publication.trackSid });
     });
 
     // 监听网络质量
+    debugPanelRef.value?.addLog('info', '正在监听网络质量...');
     room.localParticipant.on('networkQualityLevelChanged', (quality) => {
       networkQuality.value = quality;
       networkQualityText.value = qualityMap[quality];
+      debugPanelRef.value?.addLog('info', `网络质量变化: ${qualityMap[quality]} (${quality}/5)`);
     });
 
     // 监听远程参与者（发起人）
+    debugPanelRef.value?.addLog('info', '开始监听远程参与者（发起人）连接...');
     room.participants.forEach(participantConnected);
     room.on('participantConnected', participantConnected);
     room.on('participantDisconnected', participantDisconnected);
@@ -139,10 +158,18 @@ onMounted(async () => {
       connectionStatus.value = 'disconnected';
       connectionStatusText.value = statusMap.disconnected;
       console.log('已断开房间连接');
+      debugPanelRef.value?.addLog('warning', '房间连接已断开');
     });
+
+    debugPanelRef.value?.addLog('success', '所有监听器已设置完成');
 
   } catch (error) {
     console.error('连接失败:', error);
+    debugPanelRef.value?.addLog('error', '视频连接失败', {
+      error: error.message,
+      code: error.code,
+      stack: error.stack
+    });
     isConnecting.value = false;
     connectionStatus.value = 'disconnected';
     connectionStatusText.value = '连接失败';
@@ -153,6 +180,11 @@ onMounted(async () => {
 // 参与者加入（发起人）
 function participantConnected(participant) {
   console.log('参与者加入:', participant.identity);
+  debugPanelRef.value?.addLog('success', `发起人加入: ${participant.identity}`, {
+    participantSid: participant.sid,
+    state: participant.state,
+    trackCount: participant.tracks.size
+  });
 
   // 订阅已有的轨道
   participant.tracks.forEach((publication) => {
@@ -162,13 +194,22 @@ function participantConnected(participant) {
   });
 
   // 监听新的轨道
-  participant.on('trackSubscribed', attachTrack);
-  participant.on('trackUnsubscribed', detachTrack);
+  participant.on('trackSubscribed', (track) => {
+    debugPanelRef.value?.addLog('info', `订阅发起人轨道: ${track.kind}`, { trackSid: track.sid });
+    attachTrack(track);
+  });
+  participant.on('trackUnsubscribed', (track) => {
+    debugPanelRef.value?.addLog('warning', `取消订阅发起人轨道: ${track.kind}`, { trackSid: track.sid });
+    detachTrack(track);
+  });
 }
 
 // 参与者离开
 function participantDisconnected(participant) {
   console.log('参与者离开:', participant.identity);
+  debugPanelRef.value?.addLog('warning', `发起人离开: ${participant.identity}`, {
+    participantSid: participant.sid
+  });
   participant.tracks.forEach((publication) => {
     if (publication.track) {
       detachTrack(publication.track);
@@ -178,41 +219,75 @@ function participantDisconnected(participant) {
 
 // 附加轨道到页面
 function attachTrack(track) {
-  if (track.kind === 'video') {
-    const videoElement = track.attach();
-    remoteVideoRef.value.appendChild(videoElement);
-  } else if (track.kind === 'audio') {
-    const audioElement = track.attach();
-    audioElement.style.display = 'none';
-    remoteVideoRef.value.appendChild(audioElement);
+  try {
+    if (track.kind === 'video') {
+      const videoElement = track.attach();
+      remoteVideoRef.value.appendChild(videoElement);
+      debugPanelRef.value?.addLog('success', '发起人视频轨道已附加（全屏显示）', { trackName: track.name });
+    } else if (track.kind === 'audio') {
+      const audioElement = track.attach();
+      audioElement.style.display = 'none';
+      remoteVideoRef.value.appendChild(audioElement);
+      debugPanelRef.value?.addLog('success', '发起人音频轨道已附加', { trackName: track.name });
+    }
+  } catch (error) {
+    debugPanelRef.value?.addLog('error', `附加轨道失败: ${track.kind}`, { error: error.message });
   }
 }
 
 // 移除轨道
 function detachTrack(track) {
-  track.detach().forEach((element) => element.remove());
+  try {
+    track.detach().forEach((element) => element.remove());
+    debugPanelRef.value?.addLog('info', `轨道已移除: ${track.kind}`, { trackName: track.name });
+  } catch (error) {
+    debugPanelRef.value?.addLog('error', `移除轨道失败: ${track.kind}`, { error: error.message });
+  }
 }
 
 // 拍照
 function capturePhoto() {
-  capturePhotoNative();
+  debugPanelRef.value?.addLog('info', '触发拍照功能');
+  try {
+    capturePhotoNative();
+    debugPanelRef.value?.addLog('success', '拍照命令已发送到原生端');
+  } catch (error) {
+    debugPanelRef.value?.addLog('error', '拍照失败', { error: error.message });
+  }
 }
 
 // 切换手电筒
 function toggleFlashlight() {
   isFlashlightOn.value = !isFlashlightOn.value;
-  toggleFlashlightNative(isFlashlightOn.value);
+  const action = isFlashlightOn.value ? '开启' : '关闭';
+  debugPanelRef.value?.addLog('info', `${action}手电筒`);
+  try {
+    toggleFlashlightNative(isFlashlightOn.value);
+    debugPanelRef.value?.addLog('success', `手电筒${action}命令已发送到原生端`);
+  } catch (error) {
+    debugPanelRef.value?.addLog('error', `手电筒${action}失败`, { error: error.message });
+    // 失败时恢复状态
+    isFlashlightOn.value = !isFlashlightOn.value;
+  }
 }
 
 // 挂断
 function hangUp() {
+  debugPanelRef.value?.addLog('info', '正在挂断通话...');
   if (room) {
     room.disconnect();
+    debugPanelRef.value?.addLog('success', '房间连接已断开');
   }
   if (stopAudioMonitor) {
     stopAudioMonitor();
+    debugPanelRef.value?.addLog('info', '音频监听已停止');
+  }
+  if (isFlashlightOn.value) {
+    toggleFlashlightNative(false);
+    debugPanelRef.value?.addLog('info', '手电筒已关闭');
   }
   notifyCallEnded();
+  debugPanelRef.value?.addLog('success', '通话已结束');
   alert('通话已结束');
 }
 
