@@ -2,11 +2,13 @@
 import { ref, onMounted, provide } from 'vue';
 import InitiatorPage from './components/InitiatorPage.vue';
 import HelperPage from './components/HelperPage.vue';
+import DeviceTest from './components/DeviceTest.vue';
 import { getUrlParams } from './utils/twilio';
 
 const currentRole = ref('');
 const params = ref({});
 const resetKey = ref(0);
+const showDeviceTest = ref(false);
 
 onMounted(() => {
   params.value = getUrlParams();
@@ -32,6 +34,16 @@ function resetDebug() {
   console.log('已重置到初始状态');
 }
 
+// 打开设备测试
+function openDeviceTest() {
+  showDeviceTest.value = true;
+}
+
+// 关闭设备测试
+function closeDeviceTest() {
+  showDeviceTest.value = false;
+}
+
 // 提供重置方法给子组件使用
 provide('resetDebug', resetDebug);
 </script>
@@ -42,6 +54,12 @@ provide('resetDebug', resetDebug);
     <button v-if="currentRole" @click="resetDebug" class="reset-debug-btn">
       <span class="reset-icon">🔄</span>
       重置调试
+    </button>
+
+    <!-- 设备测试按钮 -->
+    <button @click="openDeviceTest" class="device-test-btn">
+      <span class="device-icon">🎥</span>
+      设备测试
     </button>
 
     <!-- 发起人页面 -->
@@ -69,9 +87,13 @@ provide('resetDebug', resetDebug);
           <li>接受人：只开启麦克风，可以看到发起人的画面并语音指导</li>
           <li>接受人可以控制发起人的手电筒和进行拍照</li>
           <li>两个页面需要使用相同的 roomId 才能通话</li>
+          <li>建议进入房间前先进行设备测试</li>
         </ul>
       </div>
     </div>
+
+    <!-- 设备测试模态框 -->
+    <DeviceTest v-if="showDeviceTest" @close="closeDeviceTest" />
   </div>
 </template>
 
@@ -143,6 +165,43 @@ body {
 
 .reset-debug-btn:hover .reset-icon {
   animation: rotate 0.5s linear infinite;
+}
+
+.device-test-btn {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  background: rgba(33, 150, 243, 0.9);
+  color: white;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: all 0.3s ease;
+  backdrop-filter: blur(10px);
+}
+
+.device-test-btn:hover {
+  background: rgba(33, 150, 243, 1);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.device-test-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.device-icon {
+  display: inline-block;
+  font-size: 18px;
 }
 
 .test-page {
