@@ -7,6 +7,15 @@
       </div>
 
       <div class="modal-body">
+        <!-- 移动端提示 -->
+        <div v-if="isMobileDevice()" class="mobile-notice">
+          <span class="notice-icon">📱</span>
+          <div class="notice-content">
+            <strong>移动端提示：</strong>
+            <p>检测到移动设备，视频通话将自动使用后置摄像头以获得最佳效果。</p>
+          </div>
+        </div>
+
         <!-- 设备选择 -->
         <div class="device-section">
           <h3>📹 视频设备</h3>
@@ -99,6 +108,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue';
+import { getLocalTracks, initializeLocalTracks, getCurrentCameraInfo, isMobileDevice } from '../utils/mediaTrackManager';
 
 const emit = defineEmits(['close']);
 
@@ -192,6 +202,14 @@ async function changeVideoDevice() {
   if (!selectedVideoDevice.value) return;
 
   try {
+    // 【重要】移动端不允许切换摄像头，仅作预览用途
+    // 实际使用时会通过全局轨道管理器使用固定的后置摄像头
+    const isMobile = isMobileDevice();
+
+    if (isMobile) {
+      console.log('[DeviceTest] 移动端检测到，设备预览仅供参考，实际通话使用后置摄像头');
+    }
+
     videoStream = await navigator.mediaDevices.getUserMedia({
       video: { deviceId: { exact: selectedVideoDevice.value } }
     });
@@ -345,6 +363,23 @@ async function refreshDevices() {
 
 // 关闭模态框
 function closeModal() {
+  // 检查是否需要预先初始化全局轨道
+  const { initialized } = getLocalTracks();
+
+  if (!initialized && (isVideoActive.value || isAudioActive.value)) {
+    console.log('[DeviceTest] 关闭测试，将预先初始化全局轨道供视频通话使用');
+
+    // 异步初始化全局轨道（不阻塞关闭）
+    initializeLocalTracks({ video: true, audio: true })
+      .then(() => {
+        const cameraInfo = getCurrentCameraInfo();
+        console.log('[DeviceTest] 全局轨道已预先初始化:', cameraInfo);
+      })
+      .catch(err => {
+        console.error('[DeviceTest] 预初始化全局轨道失败:', err);
+      });
+  }
+
   emit('close');
 }
 
@@ -439,6 +474,39 @@ onUnmounted(() => {
 
 .modal-body {
   padding: 24px;
+}
+
+.mobile-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(33, 150, 243, 0.1);
+  border: 1px solid rgba(33, 150, 243, 0.3);
+  border-radius: 8px;
+  margin-bottom: 24px;
+}
+
+.notice-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.notice-content {
+  flex: 1;
+}
+
+.notice-content strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #1976d2;
+}
+
+.notice-content p {
+  margin: 0;
+  font-size: 14px;
+  color: #555;
+  line-height: 1.5;
 }
 
 .device-section {

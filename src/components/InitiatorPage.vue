@@ -65,6 +65,7 @@ import { ref, onMounted, onUnmounted } from 'vue';
 import { connect } from 'twilio-video';
 import { getTwilioToken, getUrlParams, monitorAudioLevel } from '../utils/twilio';
 import { notifyCallEnded } from '../utils/webview';
+import { getTracksForConnection, getCurrentCameraInfo } from '../utils/mediaTrackManager';
 import DebugPanel from './DebugPanel.vue';
 
 const localVideoRef = ref(null);
@@ -116,12 +117,24 @@ onMounted(async () => {
     const token = await getTwilioToken(params.userId, params.roomId);
     debugPanelRef.value?.addLog('success', 'Token 获取成功');
 
-    // 连接到房间（开启摄像头和麦克风）
-    debugPanelRef.value?.addLog('info', '正在连接到视频房间...', { roomId: params.roomId });
+    // 【关键】获取或创建本地轨道（移动端摄像头独占解决方案）
+    debugPanelRef.value?.addLog('info', '正在获取本地媒体轨道...', { note: '复用全局轨道避免移动端冲突' });
+    const localTracks = await getTracksForConnection({ video: true, audio: true });
+
+    // 记录摄像头信息
+    const cameraInfo = getCurrentCameraInfo();
+    if (cameraInfo) {
+      debugPanelRef.value?.addLog('success', '摄像头已就绪', cameraInfo);
+    }
+
+    // 连接到房间（使用预先创建的轨道）
+    debugPanelRef.value?.addLog('info', '正在连接到视频房间（使用预创建轨道）...', {
+      roomId: params.roomId,
+      trackCount: localTracks.length
+    });
     room = await connect(token, {
       name: params.roomId,
-      audio: true,
-      video: { width: 640, height: 480 },
+      tracks: localTracks, // 传递预先创建的轨道
       networkQuality: {
         local: 1,
         remote: 1,
@@ -137,12 +150,15 @@ onMounted(async () => {
     connectionStatus.value = 'connected';
     connectionStatusText.value = statusMap.connected;
 
-    // 显示本地视频
+    // 显示本地视频（轨道已经创建，直接附加）
     debugPanelRef.value?.addLog('info', '正在附加本地视频轨道...');
     room.localParticipant.videoTracks.forEach((publication) => {
       const videoElement = publication.track.attach();
       localVideoRef.value.appendChild(videoElement);
-      debugPanelRef.value?.addLog('success', '本地视频轨道已附加', { trackSid: publication.trackSid });
+      debugPanelRef.value?.addLog('success', '本地视频轨道已附加', {
+        trackSid: publication.trackSid,
+        trackName: publication.trackName
+      });
     });
 
     // 监听本地音频音量
