@@ -4,7 +4,10 @@
 
 ## 功能特性
 
+·
+
 ### 发起人（视力困难者）
+
 - ✅ 自动开启摄像头和麦克风
 - ✅ 实时展示摄像头画面
 - ✅ 双向语音通话
@@ -13,17 +16,100 @@
 - ✅ 连接状态显示
 - ✅ 麦克风音量实时显示
 - ✅ 挂断通话功能
+- ✅ **接收并处理远程命令（截图请求、手电筒控制）**
+- ✅ **手电筒控制（原生优先，Web API 降级）**
 
 ### 接受人（志愿者/协助者）
+
 - ✅ 只开启麦克风（不发送视频）
 - ✅ 全屏显示发起人的摄像头画面
 - ✅ 双向语音通话
-- ✅ 拍照功能（调用 App 原生）
-- ✅ 手电筒控制（打开/关闭发起人手电筒）
+- ✅ **高清截图功能（从远程视频流本地捕获）**
+- ✅ **手电筒远程控制（通过 DataTrack 控制发起人手电筒）**
 - ✅ 网络质量监测
 - ✅ 连接状态显示
 - ✅ 麦克风音量实时显示
 - ✅ 挂断通话功能
+- ✅ **命令冷却与状态管理**
+- ✅ **命令 ACK/重试机制**
+
+## 新增功能说明
+
+### 1. 高清截图（L0 实现）
+
+**志愿者端**从本地接收的远程视频流中捕获高清画面，无需网络回传。
+
+**特性：**
+
+- 从 HTML5 `<video>` 元素直接捕获原始分辨率
+- 自动按最大边长 1920px 等比缩放
+- JPEG 质量 0.9，通常文件大小 < 1.5 MB
+- 截图预览对话框（可放大、下载）
+- 3 秒冷却时间防止频繁操作
+- 显示分辨率、大小、耗时等指标
+
+**实现原理：**
+
+- 志愿者端通过 DataTrack 发送 `snapshot.request` 命令
+- 发起人端收到后回复 `accepted`（实际不生成图片）
+- 志愿者端从本地的 `remoteVideoRef` 的 video 元素中使用 Canvas API 截图
+- 生成 JPEG Blob 并显示预览
+
+### 2. 手电筒远程控制
+
+**志愿者端**通过 DataTrack 发送命令，**发起人端**接收后执行手电筒控制。
+
+**特性：**
+
+- 优先使用原生 JSBridge（iOS/Android）
+- 原生失败时自动降级到 Web API (`torch` 约束)
+- 命令状态跟踪：pending → accepted → done/failed
+- ACK 超时自动重试（最多 2 次）
+- 3 秒冷却时间
+- 友好的状态提示（Toast 通知）
+
+**实现流程：**
+
+```
+志愿者点击开关
+→ 发送 torch.on/off 命令（DataTrack）
+→ 发起人收到命令，回 accepted
+→ 发起人尝试原生 JSBridge
+→ 原生成功：回 done | 原生失败：尝试 Web API
+→ Web API 成功：回 done | Web API 失败：回 failed
+→ 志愿者收到 done/failed，更新 UI 状态
+```
+
+### 3. DataTrack 通信层
+
+**可靠的点对点命令通道：**
+
+- 基于 Twilio LocalDataTrack / RemoteDataTrack
+- 命令协议：`{ traceId, cmd, payload, ts, ttlMs }`
+- 回执协议：`{ traceId, status: 'accepted'|'done'|'failed', errorCode?, metrics? }`
+- 超时重试机制（800ms 超时，最多重试 2 次）
+- 命令冷却防护（3 秒）
+
+**支持的命令：**
+
+- `snapshot.request`：截图请求
+- `torch.on`：打开手电筒
+- `torch.off`：关闭手电筒
+
+### 4. 监控与调试
+
+**内置监控收集器：**
+
+- 记录最近 20 条命令流水
+- 统计成功率、平均 TTV、错误分布
+- 调试面板实时显示命令事件
+- 支持事件类型：CMD_SENT、CMD_ACK、CMD_DONE、CMD_FAILED、CMD_TIMEOUT
+
+**可观测性：**
+
+- 每个命令都有唯一 traceId
+- 完整的生命周期追踪
+- 详细的错误码和降级路径日志
 
 ## 技术架构
 
@@ -31,14 +117,26 @@
 demoTwilio/
 ├── src/
 │   ├── components/
-│   │   ├── InitiatorPage.vue    # 发起人页面
-│   │   └── HelperPage.vue       # 接受人页面
+│   │   ├── InitiatorPage.vue    # 发起人页面（命令接收端）
+│   │   ├── HelperPage.vue       # 接受人页面（命令发送端）
+│   │   ├── DebugPanel.vue       # 调试面板
+│   │   └── DeviceTest.vue       # 设备测试
+│   ├── control/
+│   │   └── datatrack.js         # DataTrack 通信管理器
+│   ├── ui/
+│   │   ├── snapshot.js          # 截图功能模块
+│   │   └── torch.js             # 手电筒控制模块
+│   ├── bridge/
+│   │   └── native.js            # JSBridge 原生适配器
+│   ├── monitor/
+│   │   └── panel.js             # 监控数据收集器
 │   ├── utils/
 │   │   ├── twilio.js            # Twilio 工具函数
-│   │   └── webview.js           # WebView 通信工具
+│   │   ├── webview.js           # WebView 通信工具
+│   │   └── mediaTrackManager.js # 媒体轨道管理
+│   ├── config.js                # 应用配置（角色、命令、常量）
 │   ├── App.vue                  # 主应用组件
 │   └── main.js                  # 应用入口
-├── server.js                     # Express 后端服务
 ├── .env                         # 环境变量配置
 └── package.json                 # 项目依赖
 ```
@@ -54,34 +152,20 @@ npm install
 
 ### 2. 配置 Twilio 凭证
 
-编辑 `.env` 文件，填入你的 Twilio 凭证：
-
 ```env
-TWILIO_ACCOUNT_SID=your_account_sid_here
-TWILIO_API_KEY=your_api_key_here
-TWILIO_API_SECRET=your_api_secret_here
-PORT=3001
+改为使用线上接口返回
 ```
-
-获取凭证：
-- Account SID: https://www.twilio.com/console
-- API Key 和 Secret: https://www.twilio.com/console/runtime/api-keys
 
 ### 3. 启动应用
 
 ```bash
-# 同时启动前端和后端
-npm start
-
-# 或者分别启动
-npm run server  # 启动后端服务（端口 3001）
+# 后端使用线上接口，只需要启动前端
 npm run dev     # 启动前端开发服务器（端口 5173）
 ```
 
 ### 4. 访问应用
 
 - 前端: http://localhost:5173
-- 后端 API: http://localhost:3001
 
 ## 使用方式
 
@@ -93,12 +177,12 @@ npm run dev     # 启动前端开发服务器（端口 5173）
 http://localhost:5173?role=initiator&roomId=room123&userId=user1&userName=张三
 ```
 
-| 参数 | 说明 | 可选值 | 必填 |
-|------|------|--------|------|
-| role | 角色 | initiator（发起人）/ helper（接受人） | 是 |
-| roomId | 房间ID | 任意字符串 | 是 |
-| userId | 用户ID | 任意唯一字符串 | 是 |
-| userName | 用户名 | 任意字符串 | 否 |
+| 参数     | 说明    | 可选值                                | 必填 |
+| -------- | ------- | ------------------------------------- | ---- |
+| role     | 角色    | initiator（发起人）/ helper（接受人） | 是   |
+| roomId   | 房间 ID | 任意字符串                            | 是   |
+| userId   | 用户 ID | 任意唯一字符串                        | 是   |
+| userName | 用户名  | 任意字符串                            | 否   |
 
 **重要：** 发起人和接受人必须使用**相同的 roomId** 才能进入同一个视频房间。
 
@@ -143,7 +227,7 @@ window.webkit?.messageHandlers?.flashlight?.postMessage({ action: 'on' }); // �
 window.webkit?.messageHandlers?.flashlight?.postMessage({ action: 'off' }); // 关闭
 
 // Android
-window.android?.toggleFlashlight(true);  // 打开
+window.android?.toggleFlashlight(true); // 打开
 window.android?.toggleFlashlight(false); // 关闭
 ```
 
@@ -174,6 +258,7 @@ window.addEventListener('message', (event) => {
 生成 Twilio Access Token
 
 **请求体：**
+
 ```json
 {
   "identity": "user-123",
@@ -182,6 +267,7 @@ window.addEventListener('message', (event) => {
 ```
 
 **响应：**
+
 ```json
 {
   "identity": "user-123",
@@ -194,6 +280,7 @@ window.addEventListener('message', (event) => {
 健康检查接口
 
 **响应：**
+
 ```json
 {
   "status": "ok",
@@ -206,18 +293,20 @@ window.addEventListener('message', (event) => {
 ### 单向视频 + 双向音频
 
 **发起人：**
+
 ```javascript
 const room = await connect(token, {
-  audio: true,  // 开启麦克风
-  video: true,  // 开启摄像头
+  audio: true, // 开启麦克风
+  video: true, // 开启摄像头
 });
 ```
 
 **接受人：**
+
 ```javascript
 const room = await connect(token, {
-  audio: true,   // 开启麦克风
-  video: false,  // 不开启摄像头
+  audio: true, // 开启麦克风
+  video: false, // 不开启摄像头
 });
 ```
 
@@ -246,7 +335,7 @@ analyser.fftSize = 256;
 ### 开发环境
 
 ```bash
-npm start
+npm run dev
 ```
 
 ### 生产构建
@@ -256,14 +345,6 @@ npm run build
 ```
 
 构建产物在 `dist/` 目录，可以部署到任何静态文件服务器。
-
-后端服务需要单独部署：
-
-```bash
-node server.js
-```
-
-建议使用 PM2 或其他进程管理工具保持服务运行。
 
 ## 浏览器兼容性
 

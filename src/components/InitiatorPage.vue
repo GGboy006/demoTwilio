@@ -67,6 +67,10 @@ import { getTwilioToken, getUrlParams, monitorAudioLevel } from '../utils/twilio
 import { notifyCallEnded } from '../utils/webview';
 import { getTracksForConnection, getCurrentCameraInfo } from '../utils/mediaTrackManager';
 import DebugPanel from './DebugPanel.vue';
+import { DataTrackManager } from '../control/datatrack.js';
+import { NativeBridge } from '../bridge/native.js';
+import { CMD, CMD_STATUS, ERROR_CODE, CMD_TTL_MS } from '../config.js';
+import { MonitorCollector, EVENT_TYPE } from '../monitor/panel.js';
 
 const localVideoRef = ref(null);
 const remoteVideoRef = ref(null);
@@ -87,6 +91,11 @@ let notificationTimer = null;
 
 let room = null;
 let stopAudioMonitor = null;
+
+// DataTrack 和原生桥接管理器
+let dataTrackManager = null;
+let nativeBridge = null;
+let monitorCollector = null;
 
 // 连接状态映射
 const statusMap = {
@@ -112,6 +121,15 @@ onMounted(async () => {
     console.log('发起人参数:', params);
     debugPanelRef.value?.addLog('info', '发起人页面初始化', params);
 
+    // 初始化管理器
+    dataTrackManager = new DataTrackManager();
+    nativeBridge = new NativeBridge();
+    monitorCollector = new MonitorCollector();
+    debugPanelRef.value?.addLog('success', 'DataTrack 和原生桥接管理器已初始化');
+
+    // 注册命令处理器
+    setupCommandHandlers();
+
     // 获取 Token
     debugPanelRef.value?.addLog('info', '正在获取 Twilio Token...', { userId: params.userId, roomId: params.roomId });
     const token = await getTwilioToken(params.userId, params.roomId);
@@ -127,14 +145,19 @@ onMounted(async () => {
       debugPanelRef.value?.addLog('success', '摄像头已就绪', cameraInfo);
     }
 
-    // 连接到房间（使用预先创建的轨道）
-    debugPanelRef.value?.addLog('info', '正在连接到视频房间（使用预创建轨道）...', {
+    // 创建 DataTrack 并添加到轨道列表
+    const localDataTrack = dataTrackManager.createLocalDataTrack();
+    localTracks.push(localDataTrack);
+    debugPanelRef.value?.addLog('success', 'DataTrack 已创建');
+
+    // 连接到房间（使用预先创建的轨道，包含 DataTrack）
+    debugPanelRef.value?.addLog('info', '正在连接到视频房间（包含 DataTrack）...', {
       roomId: params.roomId,
       trackCount: localTracks.length
     });
     room = await connect(token, {
       name: params.roomId,
-      tracks: localTracks, // 传递预先创建的轨道
+      tracks: localTracks, // 传递预先创建的轨道（包含 DataTrack）
       networkQuality: {
         local: 1,
         remote: 1,
@@ -208,6 +231,153 @@ onMounted(async () => {
   }
 });
 
+// 设置命令处理器
+function setupCommandHandlers() {
+  // 处理截图请求
+  dataTrackManager.registerCommandHandler(CMD.SNAPSHOT_REQUEST, handleSnapshotRequest);
+
+  // 处理手电筒开启
+  dataTrackManager.registerCommandHandler(CMD.TORCH_ON, handleTorchOn);
+
+  // 处理手电筒关闭
+  dataTrackManager.registerCommandHandler(CMD.TORCH_OFF, handleTorchOff);
+
+  debugPanelRef.value?.addLog('success', '命令处理器已注册');
+}
+
+// 处理截图请求
+async function handleSnapshotRequest(message, participantSid) {
+  const { traceId } = message;
+  debugPanelRef.value?.addLog('info', '收到截图请求', { traceId, from: participantSid });
+
+  // 立即回复 accepted
+  dataTrackManager.sendResponse(traceId, CMD_STATUS.ACCEPTED);
+  monitorCollector.recordEvent(EVENT_TYPE.CMD_ACK, { cmd: CMD.SNAPSHOT_REQUEST, traceId });
+
+  try {
+    // 盲人端不实际生成截图，只是短暂提示用户
+    // 实际截图由志愿者端从远程视频流中捕获
+    debugPanelRef.value?.addLog('success', '截图请求已接受（对端将从视频流截取）');
+
+    // 模拟处理时间
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // 回复 done
+    dataTrackManager.sendResponse(traceId, CMD_STATUS.DONE);
+    monitorCollector.recordEvent(EVENT_TYPE.CMD_DONE, { cmd: CMD.SNAPSHOT_REQUEST, traceId });
+
+  } catch (error) {
+    console.error('处理截图请求失败:', error);
+    dataTrackManager.sendResponse(traceId, CMD_STATUS.FAILED, { errorCode: ERROR_CODE.UNKNOWN });
+    monitorCollector.recordEvent(EVENT_TYPE.CMD_FAILED, {
+      cmd: CMD.SNAPSHOT_REQUEST,
+      traceId,
+      errorCode: ERROR_CODE.UNKNOWN
+    });
+  }
+}
+
+// 处理手电筒开启
+async function handleTorchOn(message, participantSid) {
+  const { traceId } = message;
+  debugPanelRef.value?.addLog('info', '收到手电筒开启命令', { traceId, from: participantSid });
+
+  // 立即回复 accepted
+  dataTrackManager.sendResponse(traceId, CMD_STATUS.ACCEPTED);
+  monitorCollector.recordEvent(EVENT_TYPE.CMD_ACK, { cmd: CMD.TORCH_ON, traceId });
+
+  // 优先尝试原生手电筒
+  if (nativeBridge.isNativeAvailable()) {
+    debugPanelRef.value?.addLog('info', '尝试使用原生手电筒');
+
+    nativeBridge.openTorch(
+      traceId,
+      // 成功回调
+      () => {
+        debugPanelRef.value?.addLog('success', '手电筒已开启（原生）');
+        dataTrackManager.sendResponse(traceId, CMD_STATUS.DONE);
+        monitorCollector.recordEvent(EVENT_TYPE.TORCH_SUCCESS, { action: 'on', method: 'native' });
+      },
+      // 失败回调 - 尝试 Web API
+      async (errorCode) => {
+        debugPanelRef.value?.addLog('warning', `原生手电筒失败: ${errorCode}，尝试 Web API`);
+        await tryWebTorch(traceId, true);
+      }
+    );
+  } else {
+    // 直接尝试 Web API
+    debugPanelRef.value?.addLog('info', '原生不可用，尝试 Web API');
+    await tryWebTorch(traceId, true);
+  }
+}
+
+// 处理手电筒关闭
+async function handleTorchOff(message, participantSid) {
+  const { traceId } = message;
+  debugPanelRef.value?.addLog('info', '收到手电筒关闭命令', { traceId, from: participantSid });
+
+  // 立即回复 accepted
+  dataTrackManager.sendResponse(traceId, CMD_STATUS.ACCEPTED);
+  monitorCollector.recordEvent(EVENT_TYPE.CMD_ACK, { cmd: CMD.TORCH_OFF, traceId });
+
+  // 优先尝试原生手电筒
+  if (nativeBridge.isNativeAvailable()) {
+    debugPanelRef.value?.addLog('info', '尝试使用原生手电筒');
+
+    nativeBridge.closeTorch(
+      traceId,
+      // 成功回调
+      () => {
+        debugPanelRef.value?.addLog('success', '手电筒已关闭（原生）');
+        dataTrackManager.sendResponse(traceId, CMD_STATUS.DONE);
+        monitorCollector.recordEvent(EVENT_TYPE.TORCH_SUCCESS, { action: 'off', method: 'native' });
+      },
+      // 失败回调 - 尝试 Web API
+      async (errorCode) => {
+        debugPanelRef.value?.addLog('warning', `原生手电筒失败: ${errorCode}，尝试 Web API`);
+        await tryWebTorch(traceId, false);
+      }
+    );
+  } else {
+    // 直接尝试 Web API
+    debugPanelRef.value?.addLog('info', '原生不可用，尝试 Web API');
+    await tryWebTorch(traceId, false);
+  }
+}
+
+// 尝试使用 Web API 控制手电筒
+async function tryWebTorch(traceId, enabled) {
+  try {
+    // 获取本地视频轨道
+    const videoTrack = Array.from(room.localParticipant.videoTracks.values())[0]?.track;
+
+    if (!videoTrack) {
+      throw new Error('未找到视频轨道');
+    }
+
+    await nativeBridge.applyWebTorch(videoTrack.mediaStreamTrack, enabled);
+
+    debugPanelRef.value?.addLog('success', `手电筒已${enabled ? '开启' : '关闭'}（Web API）`);
+    dataTrackManager.sendResponse(traceId, CMD_STATUS.DONE);
+    monitorCollector.recordEvent(EVENT_TYPE.TORCH_SUCCESS, {
+      action: enabled ? 'on' : 'off',
+      method: 'web'
+    });
+
+  } catch (error) {
+    console.error('Web API 手电筒失败:', error);
+    debugPanelRef.value?.addLog('error', `手电筒控制失败: ${error.message}`);
+
+    dataTrackManager.sendResponse(traceId, CMD_STATUS.FAILED, {
+      errorCode: ERROR_CODE.NOT_SUPPORTED
+    });
+    monitorCollector.recordEvent(EVENT_TYPE.TORCH_FAILED, {
+      errorCode: ERROR_CODE.NOT_SUPPORTED,
+      message: error.message
+    });
+  }
+}
+
 // 显示加入通知
 function showParticipantJoinedNotification(participantName) {
   // 清除之前的定时器
@@ -236,6 +406,9 @@ function participantConnected(participant) {
 
   // 显示加入通知
   showParticipantJoinedNotification(participant.identity);
+
+  // 订阅远程 DataTrack
+  dataTrackManager.subscribeParticipant(participant);
 
   // 订阅已有的轨道
   participant.tracks.forEach((publication) => {
@@ -313,15 +486,32 @@ function hangUp() {
 }
 
 onUnmounted(() => {
+  // 清理房间连接
   if (room) {
     room.disconnect();
   }
+
+  // 清理音频监听
   if (stopAudioMonitor) {
     stopAudioMonitor();
   }
+
+  // 清理通知定时器
   if (notificationTimer) {
     clearTimeout(notificationTimer);
   }
+
+  // 清理 DataTrack 管理器
+  if (dataTrackManager) {
+    dataTrackManager.cleanup();
+  }
+
+  // 清理原生桥接
+  if (nativeBridge) {
+    nativeBridge.cleanup();
+  }
+
+  debugPanelRef.value?.addLog('info', '所有资源已清理');
 });
 </script>
 
